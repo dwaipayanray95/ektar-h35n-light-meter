@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>H35N Light Meter</title>
+  <style>
+    :root {
+      --bg: #0f1115; --fg: #f6f7fb; --muted:#a8b0c2; --card:#171a22; --accent:#7aa2ff;
+      --ring:#0000001a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--fg);
+      font: 16px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+    }
+    .wrap { max-width: 780px; margin: 24px auto 48px; padding: 0 16px; }
+    h1 { margin: 0 0 12px; font-size: 28px; font-weight: 800; letter-spacing: .2px; }
+    .videoWrap {
+      position: relative; background: #000; border-radius: 12px; overflow: hidden;
+      outline: 1px solid var(--ring);
+    }
+    video {
+      width: 100%; height: auto; display: block;
+      background: #000; transform: scaleX(-1); /* selfie-safe; removed with facingMode: environment */
+    }
+    .overlayCenter {
+      position: absolute; inset: 0; pointer-events: none;
+      outline: 2px dashed #ffffff33; margin: 14%;
+      border-radius: 8px;
+    }
+    .grid {
+      display: grid; gap: 12px; margin-top: 16px;
+    }
+    .row { display:flex; gap:12px; align-items:center; flex-wrap: wrap; }
+    label { color: var(--muted); font-size: 14px; }
+    select, button, input[type="checkbox"] {
+      font: inherit;
+    }
+    select, button {
+      background: var(--card); color: var(--fg); border: 1px solid var(--ring);
+      padding: 10px 12px; border-radius: 10px;
+    }
+    button.primary { background: var(--accent); color: #0b1020; border:none; }
+    button.ghost { background: transparent; border: 1px solid var(--ring); }
+    .spec { color: var(--muted); font-size: 14px; }
+    .readout {
+      margin-top: 6px; font-weight: 800; font-size: 32px; letter-spacing: 0.2px;
+    }
+    .panel {
+      background: var(--card); border: 1px solid var(--ring);
+      padding: 12px; border-radius: 12px;
+    }
+    .calBtns { display:flex; gap:8px; flex-wrap: wrap; }
+    .hint { color: var(--muted); font-size: 13px; }
+    .startCover {
+      position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+      background: linear-gradient(0deg, #000000AA, #000000AA);
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>H35N Light Meter</h1>
+
+    <div class="videoWrap">
+      <video id="video" playsinline muted></video>
+      <div class="overlayCenter" aria-hidden="true"></div>
+      <div id="starter" class="startCover" hidden>
+        <button id="startBtn" class="primary">Enable Camera</button>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="row">
+        <label for="iso">Film Stock (ISO)</label>
+        <select id="iso" aria-label="Film ISO">
+          <option value="50">ISO 50</option>
+          <option value="100" selected>ISO 100</option>
+          <option value="160">ISO 160</option>
+          <option value="200">ISO 200</option>
+          <option value="400">ISO 400</option>
+          <option value="800">ISO 800</option>
+          <option value="1600">ISO 1600</option>
+          <option value="3200">ISO 3200</option>
+        </select>
+
+        <label class="row" style="gap:8px;margin-left:auto;">
+          <input type="checkbox" id="flash" />
+          Flash ON (H35N ~f/8)
+        </label>
+      </div>
+
+      <div class="row">
+        <div class="spec" id="spec">H35N setting: f/11 @ 1/100s</div>
+      </div>
+
+      <div class="row">
+        <div class="readout" id="readout">Under by —.– stops</div>
+      </div>
+
+      <div class="panel">
+        <div class="row" style="justify-content:space-between;align-items:flex-start;">
+          <div>
+            <div style="font-weight:700;margin-bottom:6px;">Calibration</div>
+            <div class="hint">Tap a condition to align the meter (one-time or when light changes). Uses EV at ISO 100.</div>
+          </div>
+          <button id="resetCal" class="ghost" title="Clear saved calibration">Reset</button>
+        </div>
+        <div class="calBtns" style="margin-top:10px;">
+          <button class="ghost" data-ev="15">Sunny (EV 15)</button>
+          <button class="ghost" data-ev="14">Hazy sun (EV 14)</button>
+          <button class="ghost" data-ev="13">Overcast bright (EV 13)</button>
+          <button class="ghost" data-ev="12">Open shade (EV 12)</button>
+          <button class="ghost" id="calNow">Use current as EV…</button>
+          <select id="calEvPick" aria-label="Set current as EV">
+            <option value="15">15</option><option value="14">14</option><option value="13">13</option>
+            <option value="12" selected>12</option><option value="11">11</option><option value="10">10</option>
+          </select>
+        </div>
+        <div class="hint" style="margin-top:8px;">Best results: point the center box at a mid-tone surface (18% gray if you have one) when calibrating.</div>
+      </div>
+    </div>
+  </div>
+
+  <canvas id="canvas" width="240" height="160" style="display:none;"></canvas>
+
+  <script>
+    // ---------- Constants (H35N) ----------
+    const SHUTTER = 1/100; // seconds, fixed
+    const fOff = 11.0;     // H35N normal aperture
+    const fOn  = 8.0;      // H35N with flash switch
+
+    // ---------- Elements ----------
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+    const isoSel = document.getElementById('iso');
+    const flashChk = document.getElementById('flash');
+    const readoutEl = document.getElementById('readout');
+    const specEl = document.getElementById('spec');
+    const starter = document.getElementById('starter');
+    const startBtn = document.getElementById('startBtn');
+    const resetCalBtn = document.getElementById('resetCal');
+    const calNowBtn = document.getElementById('calNow');
+    const calEvPick = document.getElementById('calEvPick');
+    const quickCalBtns = Array.from(document.querySelectorAll('.calBtns button[data-ev]'));
+
+    // ---------- State ----------
+    let stream = null;
+    let rafId = 0;
+
+    // Calibration: EV = log2(luma) + B  => B = EV - log2(luma)
+    // Default B maps luma ~ 0.18 to EV ~ 12 (indoor-ish baseline).
+    const defaultB = 12 - Math.log2(0.18);
+    let B = parseFloat(localStorage.getItem('h35n_cal_B'));
+    if (!Number.isFinite(B)) B = defaultB;
+
+    // ---------- Helpers ----------
+    const ev100ForAperture = (aperture) => Math.log2((aperture*aperture) / SHUTTER);
+
+    function computeSceneEV100(avgLuma01) {
+      const l = Math.max(1e-6, avgLuma01); // avoid -Inf
+      return Math.log2(l) + B;
+    }
+
+    function targetDeltaStops(sceneEV100, iso, aperture) {
+      const fixedEV100 = ev100ForAperture(aperture);
+      const targetEV = fixedEV100 + Math.log2(iso / 100);
+      return sceneEV100 - targetEV; // + = over; - = under
+    }
+
+    function setSpec(aperture) {
+      specEl.textContent = `H35N setting: f/${aperture.toFixed(0)} @ 1/100s`;
+    }
+
+    function updateUI(delta) {
+      const under = Math.max(0, -delta);
+      readoutEl.textContent = `Under by ${under.toFixed(1)} stops`;
+    }
+
+    function sampleCenterLuma() {
+      // Draw to small canvas and sample center patch (about 30% square)
+      const w = canvas.width, h = canvas.height;
+      ctx.drawImage(video, 0, 0, w, h);
+
+      const cx = Math.floor(w*0.35), cy = Math.floor(h*0.35);
+      const cw = Math.floor(w*0.30), ch = Math.floor(h*0.30);
+      const data = ctx.getImageData(cx, cy, cw, ch).data;
+
+      // Compute average Rec.709 luma on gamma-coded values (heuristic but OK once calibrated)
+      let sum = 0, count = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        const r = data[i], g = data[i+1], b = data[i+2];
+        const y = (0.2126*r + 0.7152*g + 0.0722*b) / 255;
+        sum += y; count++;
+      }
+      return (count ? sum / count : 0.5);
+    }
+
+    function tick() {
+      const luma = sampleCenterLuma();
+      const sceneEV = computeSceneEV100(luma);
+      const iso = parseInt(isoSel.value, 10);
+      const aperture = flashChk.checked ? fOn : fOff;
+
+      const delta = targetDeltaStops(sceneEV, iso, aperture);
+      updateUI(delta);
+
+      rafId = requestAnimationFrame(tick);
+    }
+
+    async function startCamera() {
+      try {
+        // iOS Safari: need user gesture to start; use back camera
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: "environment" } , width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: false
+        });
+        video.srcObject = stream;
+        video.onloadedmetadata = () => video.play();
+        starter.hidden = true;
+        cancelAnimationFrame(rafId);
+        rafId = requestAnimationFrame(tick);
+      } catch (e) {
+        alert("Camera access failed. Make sure you're on HTTPS and allowed camera permission.");
+        console.error(e);
+      }
+    }
+
+    function stopCamera() {
+      if (stream) {
+        for (const track of stream.getTracks()) track.stop();
+        stream = null;
+      }
+      cancelAnimationFrame(rafId);
+    }
+
+    // ---------- Events ----------
+    startBtn.addEventListener('click', startCamera);
+    window.addEventListener('visibilitychange', () => {
+      if (document.hidden) stopCamera();
+      else if (!stream) startCamera();
+    });
+
+    flashChk.addEventListener('change', () => {
+      setSpec(flashChk.checked ? fOn : fOff);
+    });
+
+    // Quick calibration presets
+    quickCalBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const EV = parseFloat(btn.dataset.ev);
+        const l = sampleCenterLuma() || 0.5;
+        B = EV - Math.log2(Math.max(1e-6, l));
+        localStorage.setItem('h35n_cal_B', B.toFixed(6));
+        // Brief flash of the readout to confirm
+        readoutEl.style.color = 'var(--accent)';
+        setTimeout(()=> readoutEl.style.color = 'var(--fg)', 300);
+      });
+    });
+
+    // Calibrate current → chosen EV
+    calNowBtn.addEventListener('click', () => {
+      const EV = parseFloat(calEvPick.value);
+      const l = sampleCenterLuma() || 0.5;
+      B = EV - Math.log2(Math.max(1e-6, l));
+      localStorage.setItem('h35n_cal_B', B.toFixed(6));
+      readoutEl.style.color = 'var(--accent)';
+      setTimeout(()=> readoutEl.style.color = 'var(--fg)', 300);
+    });
+
+    resetCalBtn.addEventListener('click', () => {
+      B = defaultB;
+      localStorage.removeItem('h35n_cal_B');
+      readoutEl.style.color = 'var(--muted)';
+      setTimeout(()=> readoutEl.style.color = 'var(--fg)', 300);
+    });
+
+    // ---------- Boot ----------
+    setSpec(fOff);
+    // iOS blocks autoplay; show the starter overlay until tapped
+    starter.hidden = false;
+
+    // Flip video horizontally only if using front camera
+    video.addEventListener('loadedmetadata', () => {
+      try {
+        const track = stream.getVideoTracks()[0];
+        const settings = track.getSettings?.() || {};
+        if (settings.facingMode === 'environment') {
+          video.style.transform = 'none';
+        }
+      } catch {}
+    });
+  </script>
+</body>
+</html>
